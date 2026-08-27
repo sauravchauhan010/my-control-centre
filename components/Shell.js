@@ -52,9 +52,17 @@ export default function Shell({ children }) {
         )}
         <div className="sidebar-footer">
           {isAdmin ? (
-            <button className="nav-item logout-btn" onClick={handleLogout}>
-              Log out
-            </button>
+            <>
+              <Link
+                href="/settings"
+                className={`nav-item ${router.pathname === "/settings" ? "active" : ""}`}
+              >
+                Settings
+              </Link>
+              <button className="nav-item logout-btn" onClick={handleLogout}>
+                Log out
+              </button>
+            </>
           ) : (
             <Link href="/login" className="nav-item">
               Admin login
