@@ -1,183 +1,72 @@
-import { useEffect, useMemo, useState } from "react";
-import Shell from "../components/Shell";
-import RecordModal from "../components/RecordModal";
-import { modules } from "../lib/modules";
+import { readTab, appendRow, updateRow, deleteRow, getSheetIdByTitle } from "../../lib/sheets";
+import { modules } from "../../lib/modules";
+import { isAuthenticated } from "../../lib/auth";
+import { getModuleVisibility } from "../../lib/settings";
 
 const config = modules.agents;
 
-export default function AgentsPage() {
-  const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [modalRecord, setModalRecord] = useState(null); // null = closed, {} = new, {...} = edit
-  const [loadError, setLoadError] = useState(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/session")
-      .then((res) => res.json())
-      .then((data) => setIsAdmin(Boolean(data.authenticated)))
-      .catch(() => setIsAdmin(false));
-  }, []);
-
-  const load = async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const res = await fetch("/api/agents");
-      if (!res.ok) throw new Error("Failed to load records");
-      const data = await res.json();
-      setRecords(data.records);
-    } catch (err) {
-      setLoadError(err.message);
-    } finally {
-      setLoading(false);
+export default async function handler(req, res) {
+  try {
+    // Reading is public only if this module is currently marked public
+    // (admin-toggleable in Settings). Writes always require a session.
+    const isPublic = await getModuleVisibility("agents");
+    if ((req.method !== "GET" || !isPublic) && !isAuthenticated(req)) {
+      return res.status(401).json({ error: "Admin login required" });
     }
-  };
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return records;
-    const q = search.toLowerCase();
-    return records.filter((r) =>
-      config.columns.some((col) =>
-        String(r[col.key] || "").toLowerCase().includes(q)
-      )
-    );
-  }, [records, search]);
-
-  const handleSave = async (values) => {
-    const isEdit = Boolean(modalRecord && modalRecord._row);
-    const res = await fetch("/api/agents", {
-      method: isEdit ? "PUT" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(isEdit ? { ...values, _row: modalRecord._row } : values),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || "Save failed");
+    if (req.method === "GET") {
+      const { records } = await readTab(config.spreadsheetId, config.tabName);
+      return res.status(200).json({ records });
     }
-    await load();
-  };
 
-  const handleDelete = async (record) => {
-    const confirmed = window.confirm(
-      `Delete ${record["Company Name"] || "this record"}? This can't be undone.`
-    );
-    if (!confirmed) return;
-    const res = await fetch("/api/agents", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ _row: record._row }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      alert(body.error || "Delete failed");
-      return;
+    if (req.method === "POST") {
+      const body = req.body;
+
+      // Auto-generate "No." as (current max + 1).
+      const { records } = await readTab(config.spreadsheetId, config.tabName);
+      const maxNo = records.reduce((max, r) => {
+        const n = parseInt(r["No."], 10);
+        return Number.isFinite(n) && n > max ? n : max;
+      }, 0);
+      const nextNo = maxNo + 1;
+
+      const values = config.columns.map((col) => {
+        if (col.key === "No.") return nextNo;
+        return body[col.key] ?? "";
+      });
+
+      await appendRow(config.spreadsheetId, config.tabName, values);
+      return res.status(201).json({ ok: true, no: nextNo });
     }
-    await load();
-  };
 
-  return (
-    <Shell>
-      <div className="sticky-top">
-        <div className="page-header">
-          <h1>Agent Information</h1>
-          <p>Directory of agents and which salesperson they're assigned to.</p>
-        </div>
+    if (req.method === "PUT") {
+      const body = req.body;
+      const { _row } = body;
+      if (!_row) {
+        return res.status(400).json({ error: "_row is required to update a record" });
+      }
 
-        <div className="toolbar">
-          <div className="toolbar-left">
-            <input
-              className="search-input"
-              placeholder="Search company, code, person…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            {!loading && !loadError && (
-              <span className="result-count">
-                {search
-                  ? `${filtered.length} of ${records.length}`
-                  : `${records.length} total`}
-              </span>
-            )}
-          </div>
-          <button
-            className="btn-primary"
-            onClick={() => setModalRecord({})}
-            style={{ visibility: isAdmin ? "visible" : "hidden" }}
-          >
-            + Add agent
-          </button>
-        </div>
-        {!isAdmin && (
-          <p className="viewer-note">
-            Viewing only. <a href="/login">Log in as admin</a> to add, edit, or delete records.
-          </p>
-        )}
-      </div>
+      const values = config.columns.map((col) => body[col.key] ?? "");
+      await updateRow(config.spreadsheetId, config.tabName, _row, values);
+      return res.status(200).json({ ok: true });
+    }
 
-      <div className="card table-card">
-        {loading ? (
-          <div className="empty-state">Loading…</div>
-        ) : loadError ? (
-          <div className="empty-state error-text">{loadError}</div>
-        ) : filtered.length === 0 ? (
-          <div className="empty-state">
-            {search ? "No agents match your search." : "No agents yet — add the first one."}
-          </div>
-        ) : (
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  {config.columns.map((col) => (
-                    <th key={col.key}>{col.label}</th>
-                  ))}
-                  {isAdmin && <th></th>}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((r) => (
-                  <tr key={r._row}>
-                    {config.columns.map((col) => (
-                      <td key={col.key}>{r[col.key]}</td>
-                    ))}
-                    {isAdmin && (
-                      <td className="row-actions">
-                        <button
-                          className="btn-secondary"
-                          onClick={() => setModalRecord(r)}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="btn-danger"
-                          onClick={() => handleDelete(r)}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+    if (req.method === "DELETE") {
+      const { _row } = req.body;
+      if (!_row) {
+        return res.status(400).json({ error: "_row is required to delete a record" });
+      }
+      const sheetId = await getSheetIdByTitle(config.spreadsheetId, config.tabName);
+      // Sheets rows are 1-indexed in the values API but 0-indexed for
+      // the deleteDimension request, so convert here.
+      await deleteRow(config.spreadsheetId, sheetId, _row - 1);
+      return res.status(200).json({ ok: true });
+    }
 
-      {modalRecord && isAdmin && (
-        <RecordModal
-          columns={config.columns}
-          initialValues={modalRecord}
-          onSave={handleSave}
-          onClose={() => setModalRecord(null)}
-        />
-      )}
-    </Shell>
-  );
+    res.setHeader("Allow", ["GET", "POST", "PUT", "DELETE"]);
+    return res.status(405).end(`Method ${req.method} Not Allowed`);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: err.message });
+  }
 }
