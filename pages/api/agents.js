@@ -6,9 +6,10 @@ const config = modules.agents;
 
 export default async function handler(req, res) {
   try {
-    // Reading is public (sales team can view without logging in).
-    // Every write requires an active admin session.
-    if (req.method !== "GET" && !isAuthenticated(req)) {
+    // Reading is public only if this module is marked public in its
+    // config. Every write always requires an active admin session.
+    const needsAuthToRead = !config.public;
+    if ((req.method !== "GET" || needsAuthToRead) && !isAuthenticated(req)) {
       return res.status(401).json({ error: "Admin login required" });
     }
 
