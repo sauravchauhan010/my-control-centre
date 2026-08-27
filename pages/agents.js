@@ -55,26 +55,55 @@ export default function AgentsPage() {
     await load();
   };
 
+  const handleDelete = async (record) => {
+    const confirmed = window.confirm(
+      `Delete ${record["Company Name"] || "this record"}? This can't be undone.`
+    );
+    if (!confirmed) return;
+    const res = await fetch("/api/agents", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _row: record._row }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(body.error || "Delete failed");
+      return;
+    }
+    await load();
+  };
+
   return (
     <Shell>
-      <div className="page-header">
-        <h1>Agent Information</h1>
-        <p>Directory of agents and which salesperson they're assigned to.</p>
-      </div>
+      <div className="sticky-top">
+        <div className="page-header">
+          <h1>Agent Information</h1>
+          <p>Directory of agents and which salesperson they're assigned to.</p>
+        </div>
 
-      <div className="card">
         <div className="toolbar">
-          <input
-            className="search-input"
-            placeholder="Search company, code, person…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div className="toolbar-left">
+            <input
+              className="search-input"
+              placeholder="Search company, code, person…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {!loading && !loadError && (
+              <span className="result-count">
+                {search
+                  ? `${filtered.length} of ${records.length}`
+                  : `${records.length} total`}
+              </span>
+            )}
+          </div>
           <button className="btn-primary" onClick={() => setModalRecord({})}>
             + Add agent
           </button>
         </div>
+      </div>
 
+      <div className="card table-card">
         {loading ? (
           <div className="empty-state">Loading…</div>
         ) : loadError ? (
@@ -84,33 +113,41 @@ export default function AgentsPage() {
             {search ? "No agents match your search." : "No agents yet — add the first one."}
           </div>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                {config.columns.map((col) => (
-                  <th key={col.key}>{col.label}</th>
-                ))}
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r) => (
-                <tr key={r._row}>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
                   {config.columns.map((col) => (
-                    <td key={col.key}>{r[col.key]}</td>
+                    <th key={col.key}>{col.label}</th>
                   ))}
-                  <td>
-                    <button
-                      className="btn-secondary"
-                      onClick={() => setModalRecord(r)}
-                    >
-                      Edit
-                    </button>
-                  </td>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filtered.map((r) => (
+                  <tr key={r._row}>
+                    {config.columns.map((col) => (
+                      <td key={col.key}>{r[col.key]}</td>
+                    ))}
+                    <td className="row-actions">
+                      <button
+                        className="btn-secondary"
+                        onClick={() => setModalRecord(r)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="btn-danger"
+                        onClick={() => handleDelete(r)}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
