@@ -1,4 +1,4 @@
-import { readTab, appendRow, updateRow } from "../../lib/sheets";
+import { readTab, appendRow, updateRow, deleteRow, getSheetIdByTitle } from "../../lib/sheets";
 import { modules } from "../../lib/modules";
 
 const config = modules.agents;
@@ -42,7 +42,19 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
-    res.setHeader("Allow", ["GET", "POST", "PUT"]);
+    if (req.method === "DELETE") {
+      const { _row } = req.body;
+      if (!_row) {
+        return res.status(400).json({ error: "_row is required to delete a record" });
+      }
+      const sheetId = await getSheetIdByTitle(config.spreadsheetId, config.tabName);
+      // Sheets rows are 1-indexed in the values API but 0-indexed for
+      // the deleteDimension request, so convert here.
+      await deleteRow(config.spreadsheetId, sheetId, _row - 1);
+      return res.status(200).json({ ok: true });
+    }
+
+    res.setHeader("Allow", ["GET", "POST", "PUT", "DELETE"]);
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   } catch (err) {
     console.error(err);
