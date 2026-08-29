@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 // `href: null` renders it greyed out as a preview of what's coming.
 const NAV_ITEMS = [
   { key: "agents", label: "Agent Information", href: "/agents" },
-  { key: "email-change", label: "Email Change Requests", href: null },
+  { key: "emailChange", label: "Email Change Requests", href: "/email-change" },
   { key: "api-checklist", label: "API Integration Checklist", href: null },
   { key: "daily-tasks", label: "Daily Tasks", href: null },
   { key: "daily-report", label: "Daily Report", href: null },
