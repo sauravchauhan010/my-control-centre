@@ -11,6 +11,11 @@ export default function SettingsPage() {
   const [error, setError] = useState(null);
   const [savingKey, setSavingKey] = useState(null);
 
+  const [people, setPeople] = useState([]);
+  const [peopleLoading, setPeopleLoading] = useState(true);
+  const [newName, setNewName] = useState("");
+  const [addingPerson, setAddingPerson] = useState(false);
+
   useEffect(() => {
     fetch("/api/session")
       .then((res) => res.json())
@@ -35,7 +40,58 @@ export default function SettingsPage() {
         setError(err.message);
         setLoading(false);
       });
+    loadPeople();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checkedAuth]);
+
+  const loadPeople = async () => {
+    setPeopleLoading(true);
+    try {
+      const res = await fetch("/api/sales-people");
+      const data = await res.json();
+      setPeople(data.people || []);
+    } catch {
+      setPeople([]);
+    } finally {
+      setPeopleLoading(false);
+    }
+  };
+
+  const addPerson = async (e) => {
+    e.preventDefault();
+    if (!newName.trim()) return;
+    setAddingPerson(true);
+    try {
+      const res = await fetch("/api/sales-people", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName.trim() }),
+      });
+      if (!res.ok) throw new Error("Failed to add");
+      setNewName("");
+      await loadPeople();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setAddingPerson(false);
+    }
+  };
+
+  const removePerson = async (person) => {
+    const confirmed = window.confirm(`Remove ${person.name} from the list?`);
+    if (!confirmed) return;
+    try {
+      const res = await fetch("/api/sales-people", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ row: person._row }),
+      });
+      if (!res.ok) throw new Error("Failed to remove");
+      await loadPeople();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
 
   const toggle = async (moduleKey) => {
     const next = !settings[moduleKey];
@@ -90,6 +146,43 @@ export default function SettingsPage() {
                   aria-label={`Make ${mod.label} ${settings[mod.key] ? "private" : "public"}`}
                 >
                   <span className="toggle-knob" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="page-header" style={{ marginTop: 32 }}>
+        <h1>Sales People</h1>
+        <p>This list feeds every salesperson dropdown across the platform.</p>
+      </div>
+
+      <div className="card">
+        <form className="add-person-form" onSubmit={addPerson}>
+          <input
+            className="search-input"
+            style={{ width: 240 }}
+            placeholder="Add a name…"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+          />
+          <button className="btn-primary" type="submit" disabled={addingPerson}>
+            {addingPerson ? "Adding…" : "+ Add"}
+          </button>
+        </form>
+
+        {peopleLoading ? (
+          <div className="empty-state">Loading…</div>
+        ) : people.length === 0 ? (
+          <div className="empty-state">No names yet — add your first one above.</div>
+        ) : (
+          <div className="settings-list">
+            {people.map((p) => (
+              <div className="settings-row" key={p._row}>
+                <div className="settings-row-label">{p.name}</div>
+                <button className="btn-danger" onClick={() => removePerson(p)}>
+                  Remove
                 </button>
               </div>
             ))}
