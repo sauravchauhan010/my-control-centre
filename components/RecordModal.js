@@ -1,11 +1,39 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+const DYNAMIC_OPTION_SOURCES = {
+  salesPeople: { endpoint: "/api/sales-people", key: "people", labelKey: "name" },
+};
 
 export default function RecordModal({ columns, initialValues, onSave, onClose }) {
   const [values, setValues] = useState(initialValues || {});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [dynamicOptions, setDynamicOptions] = useState({});
 
   const editableColumns = columns.filter((c) => !c.auto);
+
+  useEffect(() => {
+    const sourcesNeeded = new Set(
+      editableColumns.filter((c) => c.dynamicOptions).map((c) => c.dynamicOptions)
+    );
+    sourcesNeeded.forEach((sourceKey) => {
+      const source = DYNAMIC_OPTION_SOURCES[sourceKey];
+      if (!source) return;
+      fetch(source.endpoint)
+        .then((res) => res.json())
+        .then((data) => {
+          const list = (data[source.key] || []).map((item) => item[source.labelKey]);
+          setDynamicOptions((prev) => ({ ...prev, [sourceKey]: list }));
+        })
+        .catch(() => setDynamicOptions((prev) => ({ ...prev, [sourceKey]: [] })));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const optionsFor = (col) => {
+    if (col.dynamicOptions) return dynamicOptions[col.dynamicOptions] || [];
+    return col.options || [];
+  };
 
   const handleChange = (key, val) => {
     setValues((v) => ({ ...v, [key]: val }));
@@ -45,7 +73,7 @@ export default function RecordModal({ columns, initialValues, onSave, onClose })
                   onChange={(e) => handleChange(col.key, e.target.value)}
                 >
                   <option value="">Select…</option>
-                  {col.options.map((opt) => (
+                  {optionsFor(col).map((opt) => (
                     <option key={opt} value={opt}>
                       {opt}
                     </option>
