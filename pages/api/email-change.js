@@ -29,9 +29,6 @@ function valuesFromBody(body) {
 // doneHeaderOverrides in lib/modules.js). readTab() keys each record
 // by whatever's literally in the sheet's header row, so we translate
 // those keys back to the canonical ones the rest of the app expects.
-// Writing doesn't need the reverse of this: appendRow/updateRow write
-// by column position, not by header name, so column order matching
-// (which it does) is all that's required there.
 function normalizeDoneRecord(record) {
   const overrides = config.doneHeaderOverrides || {};
   const reversed = Object.fromEntries(
@@ -42,6 +39,26 @@ function normalizeDoneRecord(record) {
     normalized[reversed[key] || key] = value;
   });
   return normalized;
+}
+
+// Builds a row for the Done tab by reading its ACTUAL header order
+// from the sheet (not assumed to match Pending's column order), so
+// each value lands under the correct header regardless of how the
+// columns are arranged on Done.
+async function buildDoneRowValues(body) {
+  const { headers } = await readTab(config.spreadsheetId, config.tabs.done);
+  const overrides = config.doneHeaderOverrides || {};
+  // actual Done header text -> canonical key
+  const actualToCanonical = {};
+  Object.entries(overrides).forEach(([canonical, actual]) => {
+    actualToCanonical[actual] = canonical;
+  });
+
+  return headers.map((header) => {
+    const canonicalKey = actualToCanonical[header] || header;
+    if (canonicalKey === "Status") return "Done";
+    return body[canonicalKey] ?? "";
+  });
 }
 
 export default async function handler(req, res) {
@@ -74,9 +91,7 @@ export default async function handler(req, res) {
         if (!_row) {
           return res.status(400).json({ error: "_row is required" });
         }
-        const values = config.columns.map((col) =>
-          col.key === "Status" ? "Done" : body[col.key] ?? ""
-        );
+        const values = await buildDoneRowValues(body);
         await appendRow(config.spreadsheetId, config.tabs.done, values);
 
         const sheetId = await getSheetIdByTitle(config.spreadsheetId, config.tabs.pending);
