@@ -1,129 +1,272 @@
-import {
-  readTab,
-  appendRow,
-  updateRow,
-  deleteRow,
-  getSheetIdByTitle,
-} from "../../lib/sheets";
-import { modules } from "../../lib/modules";
-import { isAuthenticated } from "../../lib/auth";
-import { getModuleVisibility } from "../../lib/settings";
+import { useEffect, useMemo, useState } from "react";
+import Shell from "../components/Shell";
+import RecordModal from "../components/RecordModal";
+import { modules } from "../lib/modules";
 
 const config = modules.emailChange;
 
-function tabNameFor(tabKey) {
-  if (tabKey === "done") return config.tabs.done;
-  return config.tabs.pending;
-}
-
-function valuesFromBody(body) {
-  return config.columns.map((col) => {
-    if (col.key === "Date" && !body["Date"]) {
-      return new Date().toLocaleDateString("en-GB"); // dd/mm/yyyy
-    }
-    return body[col.key] ?? "";
-  });
-}
-
-// The Done tab uses different header text for a few columns (see
-// doneHeaderOverrides in lib/modules.js). readTab() keys each record
-// by whatever's literally in the sheet's header row, so we translate
-// those keys back to the canonical ones the rest of the app expects.
-function normalizeDoneRecord(record) {
-  const overrides = config.doneHeaderOverrides || {};
-  const reversed = Object.fromEntries(
-    Object.entries(overrides).map(([canonical, actual]) => [actual, canonical])
-  );
-  const normalized = {};
-  Object.entries(record).forEach(([key, value]) => {
-    normalized[reversed[key] || key] = value;
-  });
-  return normalized;
-}
-
-// Builds a row for the Done tab by reading its ACTUAL header order
-// from the sheet (not assumed to match Pending's column order), so
-// each value lands under the correct header regardless of how the
-// columns are arranged on Done.
-async function buildDoneRowValues(body, targetStatus) {
-  const { headers } = await readTab(config.spreadsheetId, config.tabs.done);
-  const overrides = config.doneHeaderOverrides || {};
-  // actual Done header text -> canonical key
-  const actualToCanonical = {};
-  Object.entries(overrides).forEach(([canonical, actual]) => {
-    actualToCanonical[actual] = canonical;
-  });
-
-  return headers.map((header) => {
-    const canonicalKey = actualToCanonical[header] || header;
-    if (canonicalKey === "Status") return targetStatus;
-    return body[canonicalKey] ?? "";
-  });
-}
-
-export default async function handler(req, res) {
-  try {
-    const isPublic = await getModuleVisibility("emailChange");
-    if ((req.method !== "GET" || !isPublic) && !isAuthenticated(req)) {
-      return res.status(401).json({ error: "Admin login required" });
-    }
-
-    if (req.method === "GET") {
-      const tabKey = req.query.tab === "done" ? "done" : "pending";
-      const { records } = await readTab(config.spreadsheetId, tabNameFor(tabKey));
-      const normalized = tabKey === "done" ? records.map(normalizeDoneRecord) : records;
-      return res.status(200).json({ records: normalized });
-    }
-
-    if (req.method === "POST") {
-      const values = valuesFromBody(req.body || {});
-      await appendRow(config.spreadsheetId, config.tabs.pending, values);
-      return res.status(201).json({ ok: true });
-    }
-
-    if (req.method === "PUT") {
-      const body = req.body || {};
-
-      // Closing a request moves it from Pending to Done, with Status
-      // set to either "Done" or "Not Possible" depending on the action.
-      if (body.action === "markDone" || body.action === "markNotPossible") {
-        const { _row } = body;
-        if (!_row) {
-          return res.status(400).json({ error: "_row is required" });
-        }
-        const targetStatus = body.action === "markNotPossible" ? "Not Possible" : "Done";
-        const values = await buildDoneRowValues(body, targetStatus);
-        await appendRow(config.spreadsheetId, config.tabs.done, values);
-
-        const sheetId = await getSheetIdByTitle(config.spreadsheetId, config.tabs.pending);
-        await deleteRow(config.spreadsheetId, sheetId, _row - 1);
-        return res.status(200).json({ ok: true });
-      }
-
-      // Plain edit of a row in whichever tab it currently lives in.
-      const { _row, tab } = body;
-      if (!_row) {
-        return res.status(400).json({ error: "_row is required" });
-      }
-      const values = config.columns.map((col) => body[col.key] ?? "");
-      await updateRow(config.spreadsheetId, tabNameFor(tab), _row, values);
-      return res.status(200).json({ ok: true });
-    }
-
-    if (req.method === "DELETE") {
-      const { _row, tab } = req.body || {};
-      if (!_row) {
-        return res.status(400).json({ error: "_row is required" });
-      }
-      const sheetId = await getSheetIdByTitle(config.spreadsheetId, tabNameFor(tab));
-      await deleteRow(config.spreadsheetId, sheetId, _row - 1);
-      return res.status(200).json({ ok: true });
-    }
-
-    res.setHeader("Allow", ["GET", "POST", "PUT", "DELETE"]);
-    return res.status(405).end(`Method ${req.method} Not Allowed`);
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: err.message });
+function parseDate(str) {
+  // Expects dd/mm/yyyy (what the API auto-fills); falls back to Date() parsing.
+  if (!str) return null;
+  const parts = str.split("/");
+  if (parts.length === 3) {
+    const [d, m, y] = parts;
+    const parsed = new Date(`${y}-${m}-${d}`);
+    if (!isNaN(parsed)) return parsed;
   }
+  const fallback = new Date(str);
+  return isNaN(fallback) ? null : fallback;
+}
+
+function daysSince(dateStr) {
+  const d = parseDate(dateStr);
+  if (!d) return null;
+  const diffMs = Date.now() - d.getTime();
+  return Math.floor(diffMs / (1000 * 60 * 60 * 24));
+}
+
+export default function EmailChangePage() {
+  const [tabKey, setTabKey] = useState("pending");
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [search, setSearch] = useState("");
+  const [modalRecord, setModalRecord] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/session")
+      .then((res) => res.json())
+      .then((data) => setIsAdmin(Boolean(data.authenticated)))
+      .catch(() => setIsAdmin(false));
+  }, []);
+
+  const load = async (tab = tabKey) => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const res = await fetch(`/api/email-change?tab=${tab}`);
+      if (!res.ok) throw new Error("Failed to load records");
+      const data = await res.json();
+      setRecords(data.records);
+    } catch (err) {
+      setLoadError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load(tabKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabKey]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return records;
+    const q = search.toLowerCase();
+    return records.filter((r) =>
+      config.columns.some((col) =>
+        String(r[col.key] || "").toLowerCase().includes(q)
+      )
+    );
+  }, [records, search]);
+
+  const handleSave = async (values) => {
+    const isEdit = Boolean(modalRecord && modalRecord._row);
+    const res = await fetch("/api/email-change", {
+      method: isEdit ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        isEdit ? { ...values, _row: modalRecord._row, tab: tabKey } : values
+      ),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || "Save failed");
+    }
+    await load(tabKey);
+  };
+
+  const handleDelete = async (record) => {
+    const confirmed = window.confirm(
+      `Delete the request for ${record["Company Name"] || "this record"}? This can't be undone.`
+    );
+    if (!confirmed) return;
+    const res = await fetch("/api/email-change", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ _row: record._row, tab: tabKey }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(body.error || "Delete failed");
+      return;
+    }
+    await load(tabKey);
+  };
+
+  const handleClose = async (record, action, confirmText) => {
+    const confirmed = window.confirm(confirmText);
+    if (!confirmed) return;
+    const res = await fetch("/api/email-change", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...record, action }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert(body.error || "Update failed");
+      return;
+    }
+    await load(tabKey);
+  };
+
+  return (
+    <Shell>
+      <div className="sticky-top">
+        <div className="page-header">
+          <h1>Email Change Requests</h1>
+          <p>Client-requested email updates, tracked from request to done.</p>
+        </div>
+
+        <div className="tab-switch">
+          <button
+            className={tabKey === "pending" ? "tab-btn active" : "tab-btn"}
+            onClick={() => setTabKey("pending")}
+          >
+            Pending
+          </button>
+          <button
+            className={tabKey === "done" ? "tab-btn active" : "tab-btn"}
+            onClick={() => setTabKey("done")}
+          >
+            Done
+          </button>
+        </div>
+
+        <div className="toolbar">
+          <div className="toolbar-left">
+            <input
+              className="search-input"
+              placeholder="Search company, agent code, email…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {!loading && !loadError && (
+              <span className="result-count">
+                {search
+                  ? `${filtered.length} of ${records.length}`
+                  : `${records.length} total`}
+              </span>
+            )}
+          </div>
+          {isAdmin && tabKey === "pending" && (
+            <button className="btn-primary" onClick={() => setModalRecord({})}>
+              + New request
+            </button>
+          )}
+        </div>
+        {!isAdmin && (
+          <p className="viewer-note">
+            Viewing only. <a href="/login">Log in as admin</a> to add, edit, or delete records.
+          </p>
+        )}
+      </div>
+
+      <div className="card table-card">
+        {loading ? (
+          <div className="empty-state">Loading…</div>
+        ) : loadError ? (
+          <div className="empty-state error-text">{loadError}</div>
+        ) : filtered.length === 0 ? (
+          <div className="empty-state">
+            {search ? "No requests match your search." : "No requests here yet."}
+          </div>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  {config.columns.map((col) => (
+                    <th key={col.key}>{col.label}</th>
+                  ))}
+                  {isAdmin && <th></th>}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r) => {
+                  const overdue =
+                    tabKey === "pending" &&
+                    (() => {
+                      const days = daysSince(r["Date"]);
+                      return days !== null && days >= config.pendingDaysThreshold;
+                    })();
+                  return (
+                    <tr key={r._row} className={overdue ? "row-overdue" : ""}>
+                      {config.columns.map((col) => (
+                        <td key={col.key}>{r[col.key]}</td>
+                      ))}
+                      {isAdmin && (
+                        <td className="row-actions">
+                          {tabKey === "pending" && (
+                            <>
+                              <button
+                                className="btn-secondary"
+                                onClick={() =>
+                                  handleClose(
+                                    r,
+                                    "markDone",
+                                    `Mark the request for ${r["Company Name"] || "this record"} as Done? It will move to the Done tab.`
+                                  )
+                                }
+                              >
+                                Mark done
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                onClick={() =>
+                                  handleClose(
+                                    r,
+                                    "markNotPossible",
+                                    `Mark the request for ${r["Company Name"] || "this record"} as Not Possible? It will move to the Done tab.`
+                                  )
+                                }
+                              >
+                                Not possible
+                              </button>
+                            </>
+                          )}
+                          <button
+                            className="btn-secondary"
+                            onClick={() => setModalRecord(r)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="btn-danger"
+                            onClick={() => handleDelete(r)}
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {modalRecord && isAdmin && (
+        <RecordModal
+          columns={config.columns}
+          initialValues={modalRecord}
+          onSave={handleSave}
+          onClose={() => setModalRecord(null)}
+        />
+      )}
+    </Shell>
+  );
 }
