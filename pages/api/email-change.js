@@ -25,6 +25,25 @@ function valuesFromBody(body) {
   });
 }
 
+// The Done tab uses different header text for a few columns (see
+// doneHeaderOverrides in lib/modules.js). readTab() keys each record
+// by whatever's literally in the sheet's header row, so we translate
+// those keys back to the canonical ones the rest of the app expects.
+// Writing doesn't need the reverse of this: appendRow/updateRow write
+// by column position, not by header name, so column order matching
+// (which it does) is all that's required there.
+function normalizeDoneRecord(record) {
+  const overrides = config.doneHeaderOverrides || {};
+  const reversed = Object.fromEntries(
+    Object.entries(overrides).map(([canonical, actual]) => [actual, canonical])
+  );
+  const normalized = {};
+  Object.entries(record).forEach(([key, value]) => {
+    normalized[reversed[key] || key] = value;
+  });
+  return normalized;
+}
+
 export default async function handler(req, res) {
   try {
     const isPublic = await getModuleVisibility("emailChange");
@@ -35,7 +54,8 @@ export default async function handler(req, res) {
     if (req.method === "GET") {
       const tabKey = req.query.tab === "done" ? "done" : "pending";
       const { records } = await readTab(config.spreadsheetId, tabNameFor(tabKey));
-      return res.status(200).json({ records });
+      const normalized = tabKey === "done" ? records.map(normalizeDoneRecord) : records;
+      return res.status(200).json({ records: normalized });
     }
 
     if (req.method === "POST") {
