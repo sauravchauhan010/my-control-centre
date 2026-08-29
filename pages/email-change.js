@@ -84,7 +84,11 @@ export default function EmailChangePage() {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.error || "Save failed");
     }
+    const result = await res.json().catch(() => ({}));
     await load(tabKey);
+    if (result.movedTo === "pending") {
+      alert("Status was changed away from Done/Not Possible — this request moved back to Pending.");
+    }
   };
 
   const handleDelete = async (record) => {
