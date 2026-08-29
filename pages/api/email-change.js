@@ -41,14 +41,15 @@ function normalizeDoneRecord(record) {
   return normalized;
 }
 
-// Builds a row for the Done tab by reading its ACTUAL header order
-// from the sheet (not assumed to match Pending's column order), so
+// Builds a row for the given tab by reading its ACTUAL header order
+// from the sheet (not assumed to match canonical column order), so
 // each value lands under the correct header regardless of how the
-// columns are arranged on Done.
-async function buildDoneRowValues(body, targetStatus) {
-  const { headers } = await readTab(config.spreadsheetId, config.tabs.done);
-  const overrides = config.doneHeaderOverrides || {};
-  // actual Done header text -> canonical key
+// columns are physically arranged in that tab. Pass statusOverride
+// to force the Status value (used when closing/reopening a request).
+async function buildRowValuesForTab(tabKey, body, statusOverride) {
+  const tabName = tabNameFor(tabKey);
+  const { headers } = await readTab(config.spreadsheetId, tabName);
+  const overrides = tabKey === "done" ? config.doneHeaderOverrides || {} : {};
   const actualToCanonical = {};
   Object.entries(overrides).forEach(([canonical, actual]) => {
     actualToCanonical[actual] = canonical;
@@ -56,10 +57,15 @@ async function buildDoneRowValues(body, targetStatus) {
 
   return headers.map((header) => {
     const canonicalKey = actualToCanonical[header] || header;
-    if (canonicalKey === "Status") return targetStatus;
+    if (statusOverride && canonicalKey === "Status") return statusOverride;
+    if (canonicalKey === "Date" && !body["Date"]) {
+      return new Date().toLocaleDateString("en-GB");
+    }
     return body[canonicalKey] ?? "";
   });
 }
+
+const CLOSED_STATUSES = ["Done", "Not Possible"];
 
 export default async function handler(req, res) {
   try {
@@ -92,7 +98,7 @@ export default async function handler(req, res) {
           return res.status(400).json({ error: "_row is required" });
         }
         const targetStatus = body.action === "markNotPossible" ? "Not Possible" : "Done";
-        const values = await buildDoneRowValues(body, targetStatus);
+        const values = await buildRowValuesForTab("done", body, targetStatus);
         await appendRow(config.spreadsheetId, config.tabs.done, values);
 
         const sheetId = await getSheetIdByTitle(config.spreadsheetId, config.tabs.pending);
@@ -105,7 +111,21 @@ export default async function handler(req, res) {
       if (!_row) {
         return res.status(400).json({ error: "_row is required" });
       }
-      const values = config.columns.map((col) => body[col.key] ?? "");
+
+      // If editing a Done-tab row and the Status is changed to
+      // something other than a closed status, that means the request
+      // isn't actually resolved — move it back to Pending instead of
+      // leaving a contradictory Status sitting in the Done tab.
+      if (tab === "done" && !CLOSED_STATUSES.includes(body["Status"])) {
+        const values = await buildRowValuesForTab("pending", body);
+        await appendRow(config.spreadsheetId, config.tabs.pending, values);
+
+        const sheetId = await getSheetIdByTitle(config.spreadsheetId, config.tabs.done);
+        await deleteRow(config.spreadsheetId, sheetId, _row - 1);
+        return res.status(200).json({ ok: true, movedTo: "pending" });
+      }
+
+      const values = await buildRowValuesForTab(tab, body);
       await updateRow(config.spreadsheetId, tabNameFor(tab), _row, values);
       return res.status(200).json({ ok: true });
     }
