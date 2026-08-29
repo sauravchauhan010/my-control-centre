@@ -5,7 +5,7 @@ export default function RecordModal({ columns, initialValues, onSave, onClose })
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  const editableColumns = columns.filter((c) => c.type !== "auto");
+  const editableColumns = columns.filter((c) => !c.auto);
 
   const handleChange = (key, val) => {
     setValues((v) => ({ ...v, [key]: val }));
