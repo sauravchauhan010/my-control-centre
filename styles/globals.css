@@ -392,6 +392,12 @@ tr:hover td {
   flex-direction: column;
 }
 
+.add-person-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
 .settings-row {
   display: flex;
   align-items: center;
