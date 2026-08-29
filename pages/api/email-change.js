@@ -45,7 +45,7 @@ function normalizeDoneRecord(record) {
 // from the sheet (not assumed to match Pending's column order), so
 // each value lands under the correct header regardless of how the
 // columns are arranged on Done.
-async function buildDoneRowValues(body) {
+async function buildDoneRowValues(body, targetStatus) {
   const { headers } = await readTab(config.spreadsheetId, config.tabs.done);
   const overrides = config.doneHeaderOverrides || {};
   // actual Done header text -> canonical key
@@ -56,7 +56,7 @@ async function buildDoneRowValues(body) {
 
   return headers.map((header) => {
     const canonicalKey = actualToCanonical[header] || header;
-    if (canonicalKey === "Status") return "Done";
+    if (canonicalKey === "Status") return targetStatus;
     return body[canonicalKey] ?? "";
   });
 }
@@ -84,14 +84,15 @@ export default async function handler(req, res) {
     if (req.method === "PUT") {
       const body = req.body || {};
 
-      // Moving a request from Pending to Done: append to Done with
-      // Status forced to "Done", then remove the original row.
-      if (body.action === "markDone") {
+      // Closing a request moves it from Pending to Done, with Status
+      // set to either "Done" or "Not Possible" depending on the action.
+      if (body.action === "markDone" || body.action === "markNotPossible") {
         const { _row } = body;
         if (!_row) {
           return res.status(400).json({ error: "_row is required" });
         }
-        const values = await buildDoneRowValues(body);
+        const targetStatus = body.action === "markNotPossible" ? "Not Possible" : "Done";
+        const values = await buildDoneRowValues(body, targetStatus);
         await appendRow(config.spreadsheetId, config.tabs.done, values);
 
         const sheetId = await getSheetIdByTitle(config.spreadsheetId, config.tabs.pending);
